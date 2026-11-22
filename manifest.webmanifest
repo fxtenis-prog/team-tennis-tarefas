@@ -1,0 +1,9 @@
+{
+  "name": "Team Tennis Tarefas",
+  "short_name": "TT Tarefas",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#f4f7f5",
+  "theme_color": "#163d32",
+  "lang": "pt-BR"
+}
