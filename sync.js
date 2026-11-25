@@ -31,30 +31,44 @@ const note=document.querySelector('.note');if(note)note.textContent='Sincroniza�
 let revision=0,again=false,timer=null;
 function schedule(){revision++;clearTimeout(timer);timer=setTimeout(()=>sync(),500)}
 const originalPersist=persist;
-persist=function(){tasks.forEach((t,i)=>t.order=i+1);originalPersist();schedule()};
+persist=function(){
+ const known=tasks.filter(t=>typeof t.order==='number'&&Number.isFinite(t.order));
+ const min=known.length?Math.min(...known.map(t=>t.order)):0;
+ let next=min-tasks.filter(t=>t.order==null).length;
+ for(const t of tasks)if(t.order==null)t.order=next++;
+ originalPersist();schedule()
+};
+const originalSaveVisualOrder=saveVisualOrder;
+saveVisualOrder=function(){originalSaveVisualOrder();tasks.forEach((t,i)=>t.order=i+1);originalPersist();schedule()};
 async function sync(){
  if(busy){again=true;return}
  if(!navigator.onLine){say('Offline — alterações preservadas neste aparelho.');return}
  if(!valid()){ready=false;say('Sessão Google expirada ou desconectada. Autorize para sincronizar; dados locais preservados.');return}
  busy=true;again=false;const rev=revision;const local=tasks.map(t=>({...t}));const base=baseline();
  try{
-  say('Sincronizando…');const cloudTasks=await readCloud();const localMap=new Map(local.map(t=>[t.id,t]));const updates=[],additions=[];const conflicts=[];
+  say('Sincronizando…');const cloudTasks=await readCloud();const localMap=new Map(local.map(t=>[t.id,t]));const updates=[],additions=[];const conflicts=[];const blocked=new Set();
   for(const t of local){
    const c=remote.get(t.id),b=base?.get(t.id);
-   if(!c){if(b){conflicts.push(t.title);continue}additions.push(toRow(t));continue}
-   if(!b){if(!equal(t,c))conflicts.push(t.title);continue}
+   if(!c){if(b){conflicts.push(t.title);blocked.add(t.id);continue}additions.push(toRow(t));continue}
+   if(!b){if(!equal(t,c)){conflicts.push(t.title);blocked.add(t.id)}continue}
    const merged={...c};let changed=false;
-   for(const k of fields){const l=norm(t,k),old=norm(b,k),v=norm(c,k);if(l===old)continue;if(v!==old&&v!==l){conflicts.push(t.title);continue}if(l!==v){merged[k]=l;changed=true}}
-   if(changed){const row=rows.get(t.id);updates.push({range:"'Tarefas'!B"+row+":F"+row,values:[[merged.title,merged.due||'',merged.priority,merged.repeat,merged.done?'TRUE':'FALSE']]},{range:"'Tarefas'!H"+row+":I"+row,values:[[new Date().toISOString(),merged.order??'']]})}
+   for(const k of fields){const l=norm(t,k),old=norm(b,k),v=norm(c,k);if(l===old)continue;if(v!==old&&v!==l){if(k==='order')continue;conflicts.push(t.title);blocked.add(t.id);continue}if(l!==v){merged[k]=l;changed=true}}
+   if(changed&&!blocked.has(t.id)){const row=rows.get(t.id);updates.push({range:"'Tarefas'!B"+row+":F"+row,values:[[merged.title,merged.due||'',merged.priority,merged.repeat,merged.done?'TRUE':'FALSE']]},{range:"'Tarefas'!H"+row+":I"+row,values:[[new Date().toISOString(),merged.order??'']]})}
   }
-  if(conflicts.length){say('Conflito: '+[...new Set(conflicts)].slice(0,3).join(', ')+'. Dados preservados. Exporte backup e revise antes de sincronizar.');return}
   if(revision!==rev){again=true;return}
   if(updates.length)await api('POST','https://sheets.googleapis.com/v4/spreadsheets/'+SHEET_ID+'/values:batchUpdate',{valueInputOption:'RAW',data:updates});
   if(additions.length)await api('POST',url('A:I')+':append?valueInputOption=RAW&insertDataOption=INSERT_ROWS',{values:additions});
   const latest=await readCloud();
   if(revision!==rev){again=true;return}
   const removed=cloudTasks.some(c=>base?.has(c.id)&&!localMap.has(c.id));
-  tasks=latest;originalPersist();localStorage.setItem(LAST_SYNC,fingerprint(tasks));ready=true;refresh.hidden=false;
+  // Preserve unsent conflicting edits and their old baseline, but accept successful independent writes.
+  const retained=latest.map(t=>blocked.has(t.id)?localMap.get(t.id):t);
+  for(const t of local)if(blocked.has(t.id)&&!remote.has(t.id))retained.push(t);
+  tasks=retained;originalPersist();
+  const nextBase=latest.filter(t=>!blocked.has(t.id));
+  for(const id of blocked){const old=base?.get(id);if(old)nextBase.push(old)}
+  localStorage.setItem(LAST_SYNC,fingerprint(nextBase));ready=true;refresh.hidden=false;
+  if(conflicts.length){say('Alterações independentes sincronizadas. Conflitos preservados: '+[...new Set(conflicts)].slice(0,3).join(', '));return}
   say(removed?'Sincronizado. Exclusões locais não apagaram registros da planilha.':'Sincronizado com Google Sheets ✓');
  }catch(e){ready=false;say('Falha na sincronização: '+e.message+' — dados locais preservados. Nova tentativa automática.')}
  finally{busy=false;if(again)setTimeout(sync,200)}
