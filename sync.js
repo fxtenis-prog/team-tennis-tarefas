@@ -30,12 +30,18 @@ function baseline(){try{const a=JSON.parse(localStorage.getItem(LAST_SYNC)||'nul
 const note=document.querySelector('.note');if(note)note.textContent='Sincronização automática quando conectado. Alterações offline ficam neste aparelho. Exporte backups regularmente.';
 let revision=0,again=false,timer=null;
 function schedule(){revision++;clearTimeout(timer);timer=setTimeout(()=>sync(),500)}
+const DELETE_KEY='team-tennis-explicit-deletes-v1';
+function deletions(){try{return JSON.parse(localStorage.getItem(DELETE_KEY)||'{}')}catch{return {}}}
+let explicitDelete=null;
+document.getElementById('tasks').addEventListener('click',e=>{const b=e.target.closest('button');if(b?.textContent==='Excluir'){explicitDelete=b.closest('[data-task-id]')?.dataset.taskId;queueMicrotask(()=>{explicitDelete=null})}},true);
+let previousTasks=tasks.map(t=>({...t}));
 const originalPersist=persist;
 persist=function(){
  const known=tasks.filter(t=>typeof t.order==='number'&&Number.isFinite(t.order));
  const min=known.length?Math.min(...known.map(t=>t.order)):0;
  let next=min-tasks.filter(t=>t.order==null).length;
  for(const t of tasks)if(t.order==null)t.order=next++;
+ const pending=deletions();const current=new Set(tasks.map(t=>t.id));for(const t of previousTasks)if(!current.has(t.id)&&explicitDelete===t.id)pending[t.id]=t;for(const t of tasks)delete pending[t.id];localStorage.setItem(DELETE_KEY,JSON.stringify(pending));previousTasks=tasks.map(t=>({...t}));
  originalPersist();schedule()
 };
 const originalSaveVisualOrder=saveVisualOrder;
@@ -58,18 +64,23 @@ async function sync(){
   if(revision!==rev){again=true;return}
   if(updates.length)await api('POST','https://sheets.googleapis.com/v4/spreadsheets/'+SHEET_ID+'/values:batchUpdate',{valueInputOption:'RAW',data:updates});
   if(additions.length)await api('POST',url('A:I')+':append?valueInputOption=RAW&insertDataOption=INSERT_ROWS',{values:additions});
+  await readCloud();
+  const pending=deletions();const clear=[];const acknowledged=[];for(const [id,t] of Object.entries(pending)){if(localMap.has(id))continue;const c=remote.get(id);if(!c){acknowledged.push(id);continue}if(!equal(t,c)){conflicts.push(t.title);continue}const row=rows.get(id);clear.push("'Tarefas'!A"+row+":I"+row);acknowledged.push(id)}
+  if(revision!==rev){again=true;return}
+  if(clear.length)await api('POST','https://sheets.googleapis.com/v4/spreadsheets/'+SHEET_ID+'/values:batchClear',{ranges:clear});
   const latest=await readCloud();
+  if(revision===rev){const remaining=deletions();for(const id of acknowledged)if(!remote.has(id))delete remaining[id];localStorage.setItem(DELETE_KEY,JSON.stringify(remaining));}
   if(revision!==rev){again=true;return}
   const removed=cloudTasks.some(c=>base?.has(c.id)&&!localMap.has(c.id));
   // Preserve unsent conflicting edits and their old baseline, but accept successful independent writes.
   const retained=latest.map(t=>blocked.has(t.id)?localMap.get(t.id):t);
   for(const t of local)if(blocked.has(t.id)&&!remote.has(t.id))retained.push(t);
-  tasks=retained;originalPersist();
+  tasks=retained.filter(t=>!Object.prototype.hasOwnProperty.call(deletions(),t.id));previousTasks=tasks.map(t=>({...t}));originalPersist();
   const nextBase=latest.filter(t=>!blocked.has(t.id));
   for(const id of blocked){const old=base?.get(id);if(old)nextBase.push(old)}
   localStorage.setItem(LAST_SYNC,fingerprint(nextBase));ready=true;refresh.hidden=false;
   if(conflicts.length){say('Alterações independentes sincronizadas. Conflitos preservados: '+[...new Set(conflicts)].slice(0,3).join(', '));return}
-  say(removed?'Sincronizado. Exclusões locais não apagaram registros da planilha.':'Sincronizado com Google Sheets ✓');
+  say(Object.keys(deletions()).length?'Exclusões pendentes de revisão.':'Sincronizado com Google Sheets ✓');
  }catch(e){ready=false;say('Falha na sincronização: '+e.message+' — dados locais preservados. Nova tentativa automática.')}
  finally{busy=false;if(again)setTimeout(sync,200)}
 }
