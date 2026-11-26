@@ -32,16 +32,22 @@ let revision=0,again=false,timer=null;
 function schedule(){revision++;clearTimeout(timer);timer=setTimeout(()=>sync(),500)}
 const DELETE_KEY='team-tennis-explicit-deletes-v1';
 function deletions(){try{return JSON.parse(localStorage.getItem(DELETE_KEY)||'{}')}catch{return {}}}
-let explicitDelete=null;
-document.getElementById('tasks').addEventListener('click',e=>{const b=e.target.closest('button');if(b?.textContent==='Excluir'){explicitDelete=b.closest('[data-task-id]')?.dataset.taskId;queueMicrotask(()=>{explicitDelete=null})}},true);
-let previousTasks=tasks.map(t=>({...t}));
+const originalRemoveTask=removeTask;
+removeTask=function(task){
+ const pending=deletions();
+ pending[task.id]=task;
+ localStorage.setItem(DELETE_KEY,JSON.stringify(pending));
+ originalRemoveTask(task);
+};
 const originalPersist=persist;
 persist=function(){
  const known=tasks.filter(t=>typeof t.order==='number'&&Number.isFinite(t.order));
  const min=known.length?Math.min(...known.map(t=>t.order)):0;
  let next=min-tasks.filter(t=>t.order==null).length;
  for(const t of tasks)if(t.order==null)t.order=next++;
- const pending=deletions();const current=new Set(tasks.map(t=>t.id));for(const t of previousTasks)if(!current.has(t.id)&&explicitDelete===t.id)pending[t.id]=t;for(const t of tasks)delete pending[t.id];localStorage.setItem(DELETE_KEY,JSON.stringify(pending));previousTasks=tasks.map(t=>({...t}));
+ const pending=deletions();
+ for(const t of tasks)delete pending[t.id];
+ localStorage.setItem(DELETE_KEY,JSON.stringify(pending));
  originalPersist();schedule()
 };
 const originalSaveVisualOrder=saveVisualOrder;
@@ -75,7 +81,7 @@ async function sync(){
   // Preserve unsent conflicting edits and their old baseline, but accept successful independent writes.
   const retained=latest.map(t=>blocked.has(t.id)?localMap.get(t.id):t);
   for(const t of local)if(blocked.has(t.id)&&!remote.has(t.id))retained.push(t);
-  tasks=retained.filter(t=>!Object.prototype.hasOwnProperty.call(deletions(),t.id));previousTasks=tasks.map(t=>({...t}));originalPersist();
+  tasks=retained.filter(t=>!Object.prototype.hasOwnProperty.call(deletions(),t.id));originalPersist();
   const nextBase=latest.filter(t=>!blocked.has(t.id));
   for(const id of blocked){const old=base?.get(id);if(old)nextBase.push(old)}
   localStorage.setItem(LAST_SYNC,fingerprint(nextBase));ready=true;refresh.hidden=false;
